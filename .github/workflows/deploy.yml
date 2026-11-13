@@ -1,0 +1,64 @@
+name: Deploy FOGER XR to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Restore and verify XR website
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 'https://github.com/Eeeeeeco/foger-xr01-viewer/releases/download/xr-v1/FOGER-XR01-website.zip' -o "$RUNNER_TEMP/site.zip"
+          printf '%s  %s\n' '72362606015d30c66adb958a8eb16390bd04c31f673d60070bccf43c2b3008cc' "$RUNNER_TEMP/site.zip" | sha256sum --check
+          python3 - <<'PY'
+          import os
+          import stat
+          from pathlib import Path, PurePosixPath
+          from zipfile import ZipFile
+
+          root = Path('_site').resolve()
+          with ZipFile(Path(os.environ['RUNNER_TEMP']) / 'site.zip') as archive:
+              entries = archive.infolist()
+              if sum(not entry.is_dir() for entry in entries) != 1411:
+                  raise ValueError('Unexpected website file count')
+              for entry in entries:
+                  name = entry.filename
+                  parts = PurePosixPath(name).parts
+                  if (not name or name.startswith('/') or '\\' in name or ':' in name
+                      or any(part in ('..', '.git', '.github') for part in parts)
+                      or stat.S_ISLNK(entry.external_attr >> 16)):
+                      raise ValueError(f'Unsafe archive entry: {name}')
+                  (root / name).resolve().relative_to(root)
+              archive.extractall(root)
+          if not (root / 'index.html').is_file():
+              raise ValueError('Root index.html is missing')
+          PY
+      - name: Upload website artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
